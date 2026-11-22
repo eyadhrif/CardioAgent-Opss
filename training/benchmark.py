@@ -186,7 +186,11 @@ def run(args):
                             best = (rank, model, config, score)
                 _, model, config, score = best
                 path = run_path / f"{name}.onnx"
-                import resource
+                try:
+                    import resource
+                    peak_rss_mb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
+                except ImportError:  # Windows has no `resource`; record unknown, never a guess.
+                    peak_rss_mb = None
                 parity = export_model(model, kind, path, X[val][:min(16, sum(val))])
                 metadata = {"name": name, "feature_kind": kind, "feature_contract": VERSION,
                     "labels": ["normal", "abnormal"], "threshold": .5, "run_id": child.info.run_id,
@@ -195,7 +199,7 @@ def run(args):
                     "onnx_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
                     "subset": bool(args.max_files), "onnx_parity_max_abs": parity,
                     "onnx_bytes": path.stat().st_size,
-                    "process_peak_rss_mb": resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024}
+                    "process_peak_rss_mb": peak_rss_mb}
                 path.with_suffix(".json").write_text(json.dumps(metadata, indent=2))
                 mlflow.log_artifact(str(path))
                 mlflow.log_artifact(str(path.with_suffix(".json")))
@@ -217,9 +221,13 @@ def run(args):
             "subset": bool(args.max_files), "models": reports}
         report_path = run_path / "benchmark.json"
         import onnx
-        registered = mlflow.onnx.log_model(
-            onnx.load(str(run_path / f"{winner['name']}.onnx")),
-            name="champion", registered_model_name="CardioAgentAudio")
+        champion_onnx = onnx.load(str(run_path / f"{winner['name']}.onnx"))
+        try:  # MLflow 3 names the logged model with `name`.
+            registered = mlflow.onnx.log_model(
+                champion_onnx, name="champion", registered_model_name="CardioAgentAudio")
+        except TypeError:  # MLflow 2 uses `artifact_path` for the same location.
+            registered = mlflow.onnx.log_model(
+                champion_onnx, artifact_path="champion", registered_model_name="CardioAgentAudio")
         client = mlflow.MlflowClient()
         version = registered.registered_model_version
         result["registered_model"] = {"name": "CardioAgentAudio", "version": version}
